@@ -1,7 +1,6 @@
 # Sequence Manipulation Tools
 
-A collection of Python tools for DNA sequence manipulation, with a focus on 
-codon optimisation for transgenic expression studies.
+A collection of custom Python tools for DNA/RNA sequence manipulation.
 
 ## Tools
 
