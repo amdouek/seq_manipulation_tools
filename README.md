@@ -59,7 +59,7 @@ python cpg_optimiser.py -s ATGCGTTCG -q
 ```
 
 #### Example output
-
+```bash
 ======================================================================
   CpG OPTIMISATION REPORT: demo_ORF
 ======================================================================
@@ -74,6 +74,7 @@ Length (bp)                    30           30            —
 CpG count (target)              7            0     -7 (-100.0%)
 GpC count (info)                4            2     -2 (not targeted)
 GC content (%)               56.7         40.0        -16.7
+```
 
 #### Background
 
