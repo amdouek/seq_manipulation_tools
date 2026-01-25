@@ -9,14 +9,18 @@ Author: Alon M Douek
 Usage:
     python cpg_optimiser.py -s ATGCGTTCGACG...
     python cpg_optimiser.py -f input.fasta -o output.fasta
-    python cpg_optimiser.py -s SEQUENCE --method dp --verbose
+    python cpg_optimiser.py -s SEQUENCE --method dp
     python cpg_optimiser.py -s SEQUENCE --reduce-gpc
+    python cpg_optimiser.py -s SEQUENCE --reduce-gpc-only
 """
 
 import argparse
 import sys
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
+
+__version__ = "1.1.0"
+__author__ = "Alon M Douek"
 
 # =============================================================================
 # CODON TABLES
@@ -102,56 +106,23 @@ def count_gpc(sequence: str) -> int:
     return sequence.upper().count('GC')
 
 
-def get_codon_cpg_score(codon: str, prev_codon: Optional[str] = None, 
-                        reduce_gpc: bool = False) -> int:
-    """
-    Calculate methylation target score for a codon.
-    
-    Args:
-        codon: Current codon (3 nucleotides)
-        prev_codon: Previous codon (for boundary checking)
-        reduce_gpc: If True, also penalise GpC dinucleotides
-    
-    Returns:
-        Score (lower is better)
-    
-    Scoring:
-        - CpG (5'-CG-3'): Canonical mammalian methylation target (always counted)
-        - GpC (5'-GC-3'): Non-canonical, optional (only if reduce_gpc=True)
-    """
-    # Always count CpG (canonical methylation target)
-    score = codon.count('CG')
-    
-    # Check for cross-boundary CpG: previous ends with C, current starts with G
-    if prev_codon and prev_codon[-1] == 'C' and codon[0] == 'G':
-        score += 1
-    
-    # Optionally count GpC (non-canonical methylation)
-    if reduce_gpc:
-        score += codon.count('GC')
-        # Cross-boundary GpC: previous ends with G, current starts with C
-        if prev_codon and prev_codon[-1] == 'G' and codon[0] == 'C':
-            score += 1
-    
-    return score
-
-
 # =============================================================================
 # OPTIMISATION ALGORITHMS
 # =============================================================================
 
-def optimise_greedy(sequence: str, use_freq: bool = False, 
-                    reduce_gpc: bool = False) -> str:
+def optimise_greedy(sequence: str, use_freq: bool = True, 
+                    reduce_cpg: bool = True, reduce_gpc: bool = False) -> str:
     """
-    Greedy codon optimisation to minimise CpG (and optionally GpC).
+    Greedy codon optimisation to minimise CpG and/or GpC.
     
     For each position, selects the codon with minimum methylation target score,
     considering the previous codon for boundary effects.
     
     Args:
         sequence: Input DNA sequence (must be divisible by 3)
-        use_freq: Weight by human codon usage frequency
-        reduce_gpc: Also minimise GpC dinucleotides
+        use_freq: Weight by human codon usage frequency (default: True)
+        reduce_cpg: Minimise CpG dinucleotides (default: True)
+        reduce_gpc: Minimise GpC dinucleotides (default: False)
     
     Returns:
         Optimised DNA sequence
@@ -173,50 +144,51 @@ def optimise_greedy(sequence: str, use_freq: bool = False,
         # Score each candidate
         scored = []
         for c in candidates:
-            # Primary score: CpG (always minimised)
-            cpg_score = c.count('CG')
-            if prev_codon and prev_codon[-1] == 'C' and c[0] == 'G':
-                cpg_score += 1
+            # Primary score: CpG (if targeted - default behaviour)
+            if reduce_cpg:
+                cpg_score = c.count('CG')
+                if prev_codon and prev_codon[-1] == 'C' and c[0] == 'G':
+                    cpg_score += 1
+            else:
+                cpg_score = 0  # Don't consider CpG        
             
-            # Secondary score: GpC (only used for tiebreaking if reduce_gpc=True)
+            # Secondary score: GpC (if targeted with --reduce_gpc)
             if reduce_gpc:
                 gpc_score = c.count('GC')
                 if prev_codon and prev_codon[-1] == 'G' and c[0] == 'C':
                     gpc_score += 1
             else:
-                gpc_score = 0  # Don't consider GpC in tiebreaking
+                gpc_score = 0  # Don't consider GpC
             
             # Tertiary score: codon frequency (negative because higher is better)
             freq_score = -HUMAN_CODON_FREQ.get(c, 10) if use_freq else 0
-            
-            # Tuple for sorting: (CpG, GpC, -frequency, codon)
+
             scored.append((cpg_score, gpc_score, freq_score, c))
-        
-        # Sort by CpG (primary), then GpC (secondary), then frequency (tertiary)
+
         scored.sort()
         optimised.append(scored[0][3])
-    
+
     return ''.join(optimised)
 
-
-def optimise_dp(sequence: str, use_freq: bool = False, 
-                reduce_gpc: bool = False) -> str:
+def optimise_dp(sequence: str, use_freq: bool = True,
+                reduce_cpg: bool = True, reduce_gpc: bool = False) -> str:
     """
-    Dynamic programming optimisation for globally minimal CpG count.
-    
+    Dynamic programming optimisation for globally minimal CpG/GpC count.
+
     Considers all possible codon combinations and finds the sequence
     with the absolute minimum number of CpG dinucleotides (including
-    cross-codon boundaries). When reduce_gpc=True, GpC is used as a
-    secondary optimisation target (tiebreaker).
-    
+    cross-codon boundaries).
+
     Args:
         sequence: Input DNA sequence (must be divisible by 3)
-        use_freq: Add penalty for rare codons
-        reduce_gpc: Also minimise GpC dinucleotides (secondary to CpG)
-    
+        use_freq: Use human codon frequency weighting (default: True)
+        reduce_cpg: Minimise CpG dinucleotides (default: True)
+        reduce_gpc: Minimise GpC dinucleotides (default: False)
+
     Returns:
-        Optimised DNA sequence
-    """
+        Optimised DNA sequence    
+    """ 
+
     sequence = clean_sequence(sequence)
     
     if len(sequence) % 3 != 0:
@@ -232,10 +204,25 @@ def optimise_dp(sequence: str, use_freq: bool = False,
     # Get codon options for each position
     codon_options = [AA_TO_CODONS.get(aa, ['NNN']) for aa in amino_acids]
     
-    # Epsilon weight for GpC - small enough to never override CpG differences
-    # Max possible GpC in a sequence is roughly n*2, so 0.001 ensures
-    # that even n*2*0.001 < 1 (one CpG) for sequences up to 500 codons
-    GPC_EPSILON = 0.001 if reduce_gpc else 0
+    # Epsilon weights for secondary criteria
+    # GpC gets small weight when secondary to CpG
+    # When GpC is primary target (--reduce-gpc-only), it gets weight 1
+    if reduce_cpg and reduce_gpc:
+        # Both targeted: CpG primary (weight 1), GpC secondary (weight 0.001)
+        CPG_WEIGHT = 1
+        GPC_WEIGHT = 0.001
+    elif reduce_cpg:
+        # Only CpG targeted; CpG gets weight 1, GpC ignored
+        CPG_WEIGHT = 1
+        GPC_WEIGHT = 0
+    elif reduce_gpc:
+        # Only GpC targeted; GpC gets weight 1, CpG ignored
+        CPG_WEIGHT = 0
+        GPC_WEIGHT = 1
+    else:
+        # Neither targeted (edge case, not predicted to happen)
+        CPG_WEIGHT = 0
+        GPC_WEIGHT = 0
     
     # Frequency weight - even smaller, only for tiebreaking after CpG and GpC
     FREQ_EPSILON = 0.0001 if use_freq else 0
@@ -245,35 +232,23 @@ def optimise_dp(sequence: str, use_freq: bool = False,
     dp = [[INF] * len(codon_options[i]) for i in range(n)]
     parent = [[None] * len(codon_options[i]) for i in range(n)]
     
-    # Base case: first codon (only internal CpG/GpC)
+    # Base case: first codon
     for j, codon in enumerate(codon_options[0]):
-        # Primary: CpG count (integer weight = 1)
-        score = codon.count('CG')
-        
-        # Secondary: GpC count (small epsilon weight)
-        score += codon.count('GC') * GPC_EPSILON
-        
-        # Tertiary: frequency penalty (even smaller epsilon)
+        score = codon.count('CG') * CPG_WEIGHT  # Primary: CpG count
+        score += codon.count('GC') * GPC_WEIGHT  # Secondary: GpC count
         if use_freq:
             score += (1 - HUMAN_CODON_FREQ.get(codon, 10) / 40) * FREQ_EPSILON
-        
         dp[0][j] = score
     
     # Fill DP table
     for i in range(1, n):
         for j, curr_codon in enumerate(codon_options[i]):
-            # Internal CpG (weight = 1)
-            internal_cpg = curr_codon.count('CG')
-            
-            # Internal GpC (weight = epsilon)
-            internal_gpc = curr_codon.count('GC') * GPC_EPSILON
+            internal_cpg = curr_codon.count('CG') * CPG_WEIGHT           
+            internal_gpc = curr_codon.count('GC') * GPC_WEIGHT
             
             for k, prev_codon in enumerate(codon_options[i-1]):
-                # Cross-boundary CpG (weight = 1)
-                boundary_cpg = 1 if (prev_codon[-1] == 'C' and curr_codon[0] == 'G') else 0
-                
-                # Cross-boundary GpC (weight = epsilon)
-                boundary_gpc = GPC_EPSILON if (prev_codon[-1] == 'G' and curr_codon[0] == 'C') else 0
+                boundary_cpg = CPG_WEIGHT if (prev_codon[-1] == 'C' and curr_codon[0] == 'G') else 0
+                boundary_gpc = GPC_WEIGHT if (prev_codon[-1] == 'G' and curr_codon[0] == 'C') else 0
                 
                 # Total score
                 score = dp[i-1][k] + internal_cpg + internal_gpc + boundary_cpg + boundary_gpc
@@ -321,6 +296,7 @@ def analyse_sequence(sequence: str) -> dict:
         'gpc_count': count_gpc(seq),
         'gc_content': gc_count / length * 100,
         'cpg_density': count_cpg(seq) / (length / 100),
+        'gpc_density': count_gpc(seq) / (length / 100),
     }
 
 
@@ -343,6 +319,19 @@ def highlight_cpg(sequence: str) -> str:
             i += 1
     return ''.join(result)
 
+def highlight_gpc(sequence: str) -> str:
+    """Create a string marking GpC positions."""
+    result = []
+    seq = sequence.upper()
+    i = 0
+    while i < len(seq):
+        if i < len(seq) - 1 and seq[i:i+2] == 'GC':
+            result.append('^^')
+            i += 2
+        else:
+            result.append(' ')
+            i += 1
+    return ''.join(result)
 
 def format_codons(sequence: str, per_line: int = 20) -> str:
     """Format sequence with codon spacing."""
@@ -355,9 +344,19 @@ def format_codons(sequence: str, per_line: int = 20) -> str:
     
     return '\n'.join(lines)
 
+def get_mode_description(reduce_cpg: bool, reduce_gpc: bool) -> str:
+    """Generate a human-readable optimisation mode description."""
+    if reduce_cpg and reduce_gpc:
+        return "CpG + GpC reduction"
+    elif reduce_cpg:
+        return "CpG only reduction (canonical methylation)"
+    elif reduce_gpc:
+        return "GpC only reduction (non-canonical methylation)"
+    else:
+        return "No dinucleotide reduction (frequency optimisation only)"
 
-def print_report(original: str, optimised: str, name: str = "Sequence", 
-                 reduce_gpc: bool = False, use_freq: bool = True):
+def print_report(original: str, optimised: str, name: str = "Sequence",
+                 reduce_cpg: bool = True, reduce_gpc: bool = False, use_freq: bool = True):
     """Print a comprehensive optimisation report."""
     orig_analysis = analyse_sequence(original)
     opt_analysis = analyse_sequence(optimised)
@@ -366,13 +365,13 @@ def print_report(original: str, optimised: str, name: str = "Sequence",
     opt_protein = translate(optimised)
     
     print(f"\n{'='*70}")
-    print(f"  CpG OPTIMISATION REPORT: {name}")
+    print(f"  CpG/GpC OPTIMISATION REPORT: {name}")
     print(f"{'='*70}")
     
     # Mode indicator
-    gpc_status = "CpG + GpC" if reduce_gpc else "CpG only"
-    freq_status = "human codon frequencies" if use_freq else "no frequency weighting"
-    print(f"\n  Mode: {gpc_status} reduction, {freq_status}")
+    mode_desc = get_mode_description(reduce_cpg, reduce_gpc)
+    freq_status = "with human codon frequencies" if use_freq else "without frequency weighting"
+    print(f"\n  Mode: {mode_desc}, {freq_status}")
     
     # Verification
     protein_match = orig_protein == opt_protein
@@ -388,12 +387,15 @@ def print_report(original: str, optimised: str, name: str = "Sequence",
     print(f"{'-'*56}")
     print(f"{'Length (bp)':<20} {orig_analysis['length']:>12} {opt_analysis['length']:>12} {'—':>12}")
     
-    # CpG (always targeted)
+    # CpG metrics
     cpg_change = opt_analysis['cpg_count'] - orig_analysis['cpg_count']
-    cpg_pct = (cpg_change / orig_analysis['cpg_count'] * 100) if orig_analysis['cpg_count'] > 0 else 0
-    print(f"{'CpG count (target)':<20} {orig_analysis['cpg_count']:>12} {opt_analysis['cpg_count']:>12} {cpg_change:>+12} ({cpg_pct:+.1f}%)")
+    if reduce_cpg:
+        cpg_pct = (cpg_change / orig_analysis['cpg_count'] * 100) if orig_analysis['cpg_count'] > 0 else 0
+        print(f"{'CpG count (target)':<20} {orig_analysis['cpg_count']:>12} {opt_analysis['cpg_count']:>12} {cpg_change:>+12} ({cpg_pct:+.1f}%)")
+    else:
+        print(f"{'CpG count (info)':<20} {orig_analysis['cpg_count']:>12} {opt_analysis['cpg_count']:>12} {cpg_change:>+12} (not targeted)")    
     
-    # GpC (targeted only if reduce_gpc=True)
+    # GpC metrics
     gpc_change = opt_analysis['gpc_count'] - orig_analysis['gpc_count']
     if reduce_gpc:
         gpc_pct = (gpc_change / orig_analysis['gpc_count'] * 100) if orig_analysis['gpc_count'] > 0 else 0
@@ -404,7 +406,11 @@ def print_report(original: str, optimised: str, name: str = "Sequence",
     gc_change = opt_analysis['gc_content'] - orig_analysis['gc_content']
     print(f"{'GC content (%)':<20} {orig_analysis['gc_content']:>12.1f} {opt_analysis['gc_content']:>12.1f} {gc_change:>+12.1f}")
     
-    print(f"{'CpG/100bp':<20} {orig_analysis['cpg_density']:>12.2f} {opt_analysis['cpg_density']:>12.2f}")
+    # Show density for targeted dinucleotide(s)
+    if reduce_cpg:
+        print(f"{'CpG/100bp':<20} {orig_analysis['cpg_density']:>12.2f} {opt_analysis['cpg_density']:>12.2f}")
+    if reduce_gpc:
+        print(f"{'GpC/100bp':<20} {orig_analysis['gpc_density']:>12.2f} {opt_analysis['gpc_density']:>12.2f}")    
     
     # Codon changes
     orig_codons = [original[i:i+3] for i in range(0, len(original), 3)]
@@ -423,19 +429,23 @@ def print_report(original: str, optimised: str, name: str = "Sequence",
             aa = CODON_TABLE.get(orig, '?')
             print(f"{pos+1:<10} {orig:<10} {opt:<10} {aa:<10}")
     
-    # Sequence alignment (for short sequences)
-    if len(original) <= 120:
+    # Sequence alignment (for sequences <= 300 bp)
+    if len(original) <= 300:
         print(f"\n{'SEQUENCE ALIGNMENT':}")
         print(f"Original:  {original}")
         print(f"Optimised: {optimised}")
         print(f"Changes:   {highlight_differences(original, optimised)}")
-        print(f"CpG orig:  {highlight_cpg(original)}")
-        print(f"CpG opt:   {highlight_cpg(optimised)}")
+        if reduce_cpg:
+            print(f"CpG orig:  {highlight_cpg(original)}")
+            print(f"CpG opt:   {highlight_cpg(optimised)}")
+        if reduce_gpc:
+            print(f"GpC orig:  {highlight_gpc(original)}")
+            print(f"GpC opt:   {highlight_gpc(optimised)}")    
     
     # Warnings
     print(f"\n{'WARNINGS':}")
     
-    # Check for rare Arg codons
+    # Check for rare Arg codons (AGA/AGG)
     aga_count = sum(1 for i in range(0, len(optimised), 3) if optimised[i:i+3] in ('AGA', 'AGG'))
     if aga_count > 0:
         print(f"  ⚠ Contains {aga_count} AGA/AGG (Arg) codons - may affect translation in some systems")
@@ -443,10 +453,18 @@ def print_report(original: str, optimised: str, name: str = "Sequence",
     if opt_analysis['gc_content'] < 40:
         print(f"  ⚠ Low GC content ({opt_analysis['gc_content']:.1f}%) - may affect mRNA stability")
     
-    if opt_analysis['cpg_count'] > 0:
-        print(f"  ℹ {opt_analysis['cpg_count']} CpG sites remain (unavoidable for this amino acid sequence)")
-    else:
-        print(f"  ✓ All CpG sites eliminated")
+    # Summary for targeted dinucleotides
+    if reduce_cpg:
+        if opt_analysis['cpg_count'] > 0:
+            print(f"  ℹ {opt_analysis['cpg_count']} CpG sites remain (unavoidable for this amino acid sequence)")
+        else:
+            print(f"  ✓ All CpG sites eliminated")
+
+    if reduce_gpc:
+        if opt_analysis['gpc_count'] > 0:
+            print(f"  ℹ {opt_analysis['gpc_count']} GpC sites remain (unavoidable for this amino acid sequence)")
+        else:
+            print(f"  ✓ All GpC sites eliminated")           
 
 
 # =============================================================================
@@ -484,6 +502,16 @@ def write_fasta(filename: str, sequences: List[Tuple[str, str]], line_width: int
             for i in range(0, len(seq), line_width):
                 f.write(seq[i:i+line_width] + '\n')
 
+def get_output_suffix(reduce_cpg: bool, reduce_gpc: bool) -> str:
+    """Generate output filename suffix based on optimisation mode."""
+    if reduce_cpg and reduce_gpc:
+        return "_CpG_GpC_reduced"
+    elif reduce_cpg:
+        return "_CpG_reduced"
+    elif reduce_gpc:
+        return "_GpC_reduced"
+    else:
+        return "_freq_optimised"              
 
 # =============================================================================
 # MAIN
@@ -491,7 +519,7 @@ def write_fasta(filename: str, sequences: List[Tuple[str, str]], line_width: int
 
 def main():
     parser = argparse.ArgumentParser(
-        description='CpG-reduced codon optimiser for transgenic ORF methylation studies',
+        description='CpG/GpC-reduced codon optimiser for transgenic ORF methylation studies',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -499,6 +527,7 @@ Examples:
   %(prog)s -f input.fasta -o output.fasta
   %(prog)s -s ATGCGTACG --method greedy 
   %(prog)s -s ATGCGTACG --reduce-gpc
+  %(prog)s -s ATGCGTACG --reduce-gpc-only
   %(prog)s -s ATGCGTACG --no-use-freq
   %(prog)s -s ATGCGTACG --quiet
   
@@ -507,10 +536,14 @@ Notes:
   - The 'dp' method (default) finds the globally optimal solution
   - The 'greedy' method is faster but may miss some optimisations
   - Human codon usage frequences are applied by default for tiebreaking (disable with --no-use-freq)
-  - Use --reduce-gpc to also minimise GpC (non-canonical methylation target)
+  - Use --reduce-gpc to also minimise GpC (non-canonical methylation target) in addition to CpG
+  - Use --reduce-gpc-only to target GpC minimisation only (ignoring CpG)
         """
     )
     
+    parser.add_argument('--version', action='version',
+                        version=f'%(prog)s {__version__}')
+
     input_group = parser.add_mutually_exclusive_group()
     input_group.add_argument('-s', '--sequence', type=str,
                              help='Input DNA sequence (coding strand, 5\' to 3\')')
@@ -522,21 +555,37 @@ Notes:
     parser.add_argument('--method', choices=['greedy', 'dp'], default='dp',
                         help='Optimisation algorithm (default: dp)')
     
-    # Frequency weighting: ON by default, can be disabled
+    # Frequency weighting
     freq_group = parser.add_mutually_exclusive_group()
     freq_group.add_argument('--use-freq', action='store_true', dest='use_freq',
                             help='Use human codon frequency weighting (default: enabled)')
     freq_group.add_argument('--no-use-freq', action='store_false', dest='use_freq',
                             help='Disable codon frequency weighting')
-    parser.set_defaults(use_freq=True)  # ← Default is now ON
+    parser.set_defaults(use_freq=True)
     
-    parser.add_argument('--reduce-gpc', action='store_true',
-                        help='Also minimise GpC dinucleotides (non-canonical methylation)')
+    # Dinucleotide targeting
+    target_group = parser.add_mutually_exclusive_group()
+    target_group.add_argument('--reduce-gpc', action='store_true',
+                              help='Minimise both CpG and GpC dinucleotides')
+    target_group.add_argument('--reduce-gpc-only', action='store_true',
+                              help='Minimise GpC dinucleotides only (ignore CpG)')
+    
     parser.add_argument('-q', '--quiet', action='store_true',
-                        help='Minimal output (just the optimised sequence)')
+                        help='Minimal output (just the optimised sequence, no report)')
     
     args = parser.parse_args()
     
+    # Determine targeting mode
+    if args.reduce_gpc_only:
+        reduce_cpg = False
+        reduce_gpc = True
+    elif args.reduce_gpc:
+        reduce_cpg = True
+        reduce_gpc = True
+    else: # Default: CpG only
+        reduce_cpg = True
+        reduce_gpc = False       
+
     # Get input sequences
     if args.sequence:
         sequences = [('input', args.sequence)]
@@ -565,7 +614,7 @@ Notes:
             continue
             
         if len(seq) % 3 != 0:
-            print(f"Warning: '{name}' length ({len(seq)}) not divisible by 3, truncating", 
+            print(f"Warning: '{name}' length ({len(seq)}) not divisible by 3; truncating.", 
                   file=sys.stderr)
             seq = seq[:len(seq) - (len(seq) % 3)]
         
@@ -577,9 +626,9 @@ Notes:
         
         # Optimise
         if args.method == 'dp':
-            optimised = optimise_dp(seq, args.use_freq, args.reduce_gpc)
+            optimised = optimise_dp(seq, args.use_freq, reduce_cpg, reduce_gpc)
         else:
-            optimised = optimise_greedy(seq, args.use_freq, args.reduce_gpc)
+            optimised = optimise_greedy(seq, args.use_freq,reduce_cpg, reduce_gpc)
         
         # Verify
         if translate(seq) != translate(optimised):
@@ -587,12 +636,12 @@ Notes:
             continue
         
         # Generate output name
-        suffix = "_CpG_reduced" if not args.reduce_gpc else "_CpG_GpC_reduced"
+        suffix = get_output_suffix(reduce_cpg, reduce_gpc)
         results.append((f"{name}{suffix}", optimised))
         
         # Report
         if not args.quiet:
-            print_report(seq, optimised, name, args.reduce_gpc, args.use_freq)
+            print_report(seq, optimised, name, reduce_cpg, reduce_gpc, args.use_freq)
     
     # Output
     if args.output:
