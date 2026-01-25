@@ -65,19 +65,48 @@ python cpg_optimiser.py -s ATGCGTTCG -q
 #### Example output
 ```bash
 ======================================================================
-  CpG OPTIMISATION REPORT: demo_ORF
+  CpG/GpC OPTIMISATION REPORT: demo_ORF
 ======================================================================
 
-  Mode: CpG only reduction, human codon frequencies
+  Mode: CpG + GpC reduction, with human codon frequencies
 
 ✓ Protein sequence preserved: YES ✓
 
 METRIC                   ORIGINAL    OPTIMISED       CHANGE
 --------------------------------------------------------
 Length (bp)                    30           30            —
-CpG count (target)              7            0     -7 (-100.0%)
-GpC count (info)                4            2     -2 (not targeted)
-GC content (%)               56.7         40.0        -16.7
+CpG count (target)              7            0           -7 (-100.0%)
+GpC count (target)              3            1           -2 (-66.7%)
+GC content (%)               60.0         56.7         -3.3
+CpG/100bp                   23.33         0.00
+GpC/100bp                   10.00         3.33
+
+CODON SUBSTITUTIONS  8 of 10 codons changed
+
+Position   Original   Optimised  Amino Acid
+----------------------------------------
+2          CGT        AGA        R
+3          TCG        TCC        S
+4          ACG        ACC        T
+5          CCG        CCC        P
+6          ACG        ACA        T
+7          GCG        GCC        A
+9          ACG        ACC        T
+10         TAA        TGA        *
+
+SEQUENCE ALIGNMENT
+Original:  ATGCGTTCGACGCCGACGGCGATCACGTAA
+Optimised: ATGAGATCCACCCCCACAGCCATCACCTGA
+Changes:      ↑ ↑  ↑  ↑  ↑  ↑  ↑     ↑ ↑
+CpG orig:     ^^  ^^ ^^ ^^ ^^ ^^    ^^
+CpG opt:
+GpC orig:    ^^       ^^     ^^
+GpC opt:                     ^^
+
+WARNINGS
+  ⚠ Contains 1 AGA/AGG (Arg) codons - may affect translation in some systems
+  ✓ All CpG sites eliminated
+  ℹ 1 GpC sites remain (unavoidable for this amino acid sequence)
 ```
 
 #### Background
